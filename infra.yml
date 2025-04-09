@@ -1,0 +1,387 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Elastic Map Reduce (EMR) Demo Infrastructure"
+
+##############
+# PARAMETERS #
+##############
+
+Parameters:
+
+  LeaderNodeInstanceType:
+    Type: "String"
+    Description: "The instance type of the EMR cluster leader node."
+    Default: "m4.large"
+    AllowedValues:
+      - "m4.large"
+      - "m5.xlarge"
+
+  WorkerNodeInstanceType:
+    Type: "String"
+    Description: "The instance type of the EMR cluster worker node(s)."
+    Default: "m4.large"
+    AllowedValues:
+      - "m4.large"
+      - "m5.xlarge"
+
+  NumberOfWorkerNodes:
+    Type: "Number"
+    Default: 3
+    Description: "The number of worker nodes in the EMR cluster."
+    MinValue: 1
+    MaxValue: 5
+    ConstraintDescription: "Must be between 1 and 5 worker nodes."
+
+#############
+# RESOURCES #
+#############
+
+Resources:
+
+  #######
+  # VPC #
+  #######
+
+  EMRDemoNetwork:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "10.0.0.0/24"
+      EnableDnsSupport: "true"
+      EnableDnsHostnames: "true"
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-Network"
+
+  EMRDemoPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EMRDemoNetwork
+      CidrBlock: "10.0.0.0/26"
+      AvailabilityZone: "us-east-1a"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-PublicSubnet"
+
+  # EMR clusters seem to be preferably launched in private subnets as versions >4.2 require private subnets
+  # e.g. https://docs.aws.amazon.com/emr/latest/ManagementGuide/emr-plan-vpc-subnet.html
+  EMRDemoPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EMRDemoNetwork
+      CidrBlock: "10.0.0.64/26"
+      AvailabilityZone: "us-east-1a"
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-PrivateSubnet"
+
+  EMRDemoInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-InternetGateway"
+
+  EMRDemoNATGatewayPublicIPAddress:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EMRDemoNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EMRDemoNATGatewayPublicIPAddress.AllocationId
+      SubnetId: !Ref EMRDemoPublicSubnet
+
+  EMRDemoInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref EMRDemoNetwork
+      InternetGatewayId: !Ref EMRDemoInternetGateway
+
+  EMRDemoPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EMRDemoNetwork
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-PublicRouteTable"
+
+  EMRDemoPublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EMRDemoPublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref EMRDemoInternetGateway
+
+  EMRDemoPublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EMRDemoPublicSubnet
+      RouteTableId: !Ref EMRDemoPublicRouteTable
+
+  EMRDemoPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EMRDemoNetwork
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-PrivateRouteTable"
+
+  EMRDemoPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EMRDemoPrivateRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref EMRDemoNATGateway
+
+  EMRDemoPrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EMRDemoPrivateSubnet
+      RouteTableId: !Ref EMRDemoPrivateRouteTable
+
+  ######
+  # S3 #
+  ######
+
+  EMRDemoLogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: "emr-demo-log"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: "AES256"
+
+  EMRDemoInputBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: "emr-demo-in"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: "AES256"
+
+  EMRDemoInputBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EMRDemoInputBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "s3:GetObject"
+            Effect: Allow
+            Resource: !Sub "${EMRDemoInputBucket.Arn}/*"
+            Principal:
+              AWS:
+                - !GetAtt EMRDemoServiceRole.Arn
+          - Action:
+              - "s3:ListBucket"
+            Effect: Allow
+            Resource: !Sub "${EMRDemoInputBucket.Arn}"
+            Principal:
+              AWS:
+                - !GetAtt EMRDemoServiceRole.Arn
+
+  EMRDemoOutputBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: "emr-demo-out"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: "AES256"
+
+  EMRDemoOutputBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EMRDemoOutputBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "s3:PutObject"
+            Effect: Allow
+            Resource: !Sub "${EMRDemoOutputBucket.Arn}/*"
+            Principal:
+              AWS:
+                - !GetAtt EMRDemoServiceRole.Arn
+
+  #######
+  # EMR #
+  #######
+
+  EMRDemoCluster:
+    Type: AWS::EMR::Cluster
+    Properties:
+      Name: "EMRDemo-Cluster"
+      ReleaseLabel: "emr-7.8.0"
+      Applications:
+        - Name: "Spark"
+      Instances:
+        Ec2SubnetId: !Ref EMRDemoPrivateSubnet
+        EmrManagedMasterSecurityGroup: !Ref EMRDemoLeaderNodeSecurityGroup
+        EmrManagedSlaveSecurityGroup: !Ref EMRDemoWorkerNodeSecurityGroup
+        ServiceAccessSecurityGroup: !Ref EMRDemoServiceAccessSecurityGroup
+        MasterInstanceGroup:
+          InstanceCount: 1
+          InstanceType: !Ref LeaderNodeInstanceType
+          Market: "ON_DEMAND"
+        CoreInstanceGroup:
+          InstanceCount: !Ref NumberOfWorkerNodes
+          InstanceType: !Ref WorkerNodeInstanceType
+          Market: "ON_DEMAND"
+      LogUri: !Sub "s3://${EMRDemoLogBucket}"
+      JobFlowRole: "EMR_EC2_DefaultRole"
+      ServiceRole: !Ref EMRDemoServiceRole
+      VisibleToAllUsers: true
+      EbsRootVolumeSize: 32
+
+  #######
+  # EC2 #
+  #######
+
+  EMRDemoLeaderNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security Group for EMR Spark leader node."
+      VpcId: !Ref EMRDemoNetwork
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8088'
+          ToPort: '8088'
+          CidrIp: 0.0.0.0/0  # Allow access to YARN ResourceManager
+        - IpProtocol: tcp
+          FromPort: '4040'
+          ToPort: '4040'
+          CidrIp: 0.0.0.0/0  # Allow access to Spark UI
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0  # Allow SSH access to master node
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: 0.0.0.0/0  # Allow access to Spark History Server (if enabled)
+
+  EMRDemoWorkerNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security Group for EMR Spark worker node(s)."
+      VpcId: !Ref EMRDemoNetwork
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8088'
+          ToPort: '8088'
+          CidrIp: 0.0.0.0/0  # Allow access to YARN ResourceManager
+        - IpProtocol: tcp
+          FromPort: '8042'
+          ToPort: '8042'
+          CidrIp: 0.0.0.0/0  # Allow access to YARN NodeManager
+        - IpProtocol: tcp
+          FromPort: '4040'
+          ToPort: '4040'
+          CidrIp: 0.0.0.0/0  # Allow access to Spark UI
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0  # Allow SSH access to worker nodes
+        - IpProtocol: tcp
+          FromPort: '50010'
+          ToPort: '50010'
+          CidrIp: 0.0.0.0/0  # HDFS DataNode access
+        - IpProtocol: tcp
+          FromPort: '50075'
+          ToPort: '50075'
+          CidrIp: 0.0.0.0/0  # HDFS DataNode HTTP access
+
+  EMRDemoServiceAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Service access security group for EMR cluster"
+      VpcId: !Ref EMRDemoNetwork
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '2181'  # Zookeeper (if applicable for internal EMR communication)
+          ToPort: '2181'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '50070'  # HDFS NameNode HTTP access
+          ToPort: '50070'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '50075'  # HDFS DataNode HTTP access
+          ToPort: '50075'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '50010'  # HDFS DataNode access
+          ToPort: '50010'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '8032'  # YARN ResourceManager (Application Master)
+          ToPort: '8032'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '8042'  # YARN NodeManager (worker node communication)
+          ToPort: '8042'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          SourceSecurityGroupId: !Ref EMRDemoLeaderNodeSecurityGroup
+
+  #######
+  # IAM #
+  #######
+
+  EMRDemoServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "elasticmapreduce.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonEMRServicePolicy_v2"
+        - "arn:aws:iam::aws:policy/AmazonEC2FullAccess" # TODO: Fix me!
+
+  EMRDemoInputBucketAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "EMRDemo-InputBucket-AccessPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "s3:GetObject"
+            Resource: !Sub "${EMRDemoInputBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - "s3:List*"
+            Resource: !GetAtt EMRDemoInputBucket.Arn
+      Roles:
+        - !Ref EMRDemoServiceRole
+
+  EMRDemoOutputBucketAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "EMRDemo-OutputBucket-AccessPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "s3:PutObject"
+            Resource: !Sub "${EMRDemoOutputBucket.Arn}/*"
+      Roles:
+        - !Ref EMRDemoServiceRole
+
