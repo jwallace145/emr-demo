@@ -31,6 +31,13 @@ Parameters:
     MaxValue: 5
     ConstraintDescription: "Must be between 1 and 5 worker nodes."
 
+  TerminateClusterAfterNumberOfSecondsSpentIdle:
+    Type: "Number"
+    Default: 7200 # two hours
+    Description: "The number of seconds the EMR cluster can spend idle before automatic termination."
+    MinValue: 3600 # one hour
+    MaxValue: 86400 # one day
+
 #############
 # RESOURCES #
 #############
@@ -155,6 +162,38 @@ Resources:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: "AES256"
 
+  EMRDemoSourceCodeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: "emr-demo-src"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: "AES256"
+
+  EMRDemoSourceCodeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EMRDemoSourceCodeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "s3:GetObject"
+            Effect: Allow
+            Resource: !Sub "${EMRDemoSourceCodeBucket.Arn}/*"
+            Principal:
+              AWS:
+                - !GetAtt EMRDemoServiceRole.Arn
+          - Action:
+              - "s3:ListBucket"
+            Effect: Allow
+            Resource: !Sub "${EMRDemoSourceCodeBucket.Arn}"
+            Principal:
+              AWS:
+                - !GetAtt EMRDemoServiceRole.Arn
+
   EMRDemoInputBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
@@ -218,6 +257,7 @@ Resources:
 
   EMRDemoCluster:
     Type: AWS::EMR::Cluster
+    DependsOn: EMRDemoPrivateRoute
     Properties:
       Name: "EMRDemo-Cluster"
       ReleaseLabel: "emr-7.8.0"
@@ -236,6 +276,8 @@ Resources:
           InstanceCount: !Ref NumberOfWorkerNodes
           InstanceType: !Ref WorkerNodeInstanceType
           Market: "ON_DEMAND"
+      AutoTerminationPolicy:
+        IdleTimeout: !Ref TerminateClusterAfterNumberOfSecondsSpentIdle
       LogUri: !Sub "s3://${EMRDemoLogBucket}"
       JobFlowRole: "EMR_EC2_DefaultRole"
       ServiceRole: !Ref EMRDemoServiceRole
@@ -311,7 +353,6 @@ Resources:
     Properties:
       GroupDescription: "Service access security group for EMR cluster"
       VpcId: !Ref EMRDemoNetwork
-      DependsOn: EMRDemoLeaderNodeSecurityGroup
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: '2181'  # Zookeeper (if applicable for internal EMR communication)
@@ -362,6 +403,24 @@ Resources:
       ManagedPolicyArns:
         - "arn:aws:iam::aws:policy/service-role/AmazonEMRServicePolicy_v2"
         - "arn:aws:iam::aws:policy/AmazonEC2FullAccess" # TODO: Fix me!
+
+  EMRDemoSourceCodeBucketAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "EMRDemo-SourceCodeBucket-AccessPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "s3:GetObject"
+            Resource: !Sub "${EMRDemoSourceCodeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - "s3:List*"
+            Resource: !GetAtt EMRDemoSourceCodeBucket.Arn
+      Roles:
+        - !Ref EMRDemoServiceRole
 
   EMRDemoInputBucketAccessPolicy:
     Type: AWS::IAM::Policy
