@@ -3,4 +3,4 @@
 
 ### Architecture Diagram
 
-![EMRDemo-ArchDiagram](https://github.com/user-attachments/assets/04b75fe6-55b9-42c6-a23b-94b3c5327f6a)
+![EMRDemo-ArchDiagram](https://github.com/user-attachments/assets/bea3c654-a4d6-4f50-88af-1502f04bbb68)
