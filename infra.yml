@@ -268,6 +268,9 @@ Resources:
           FromPort: '8080'
           ToPort: '8080'
           CidrIp: 0.0.0.0/0  # Allow access to Spark History Server (if enabled)
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-LeaderNode-SecurityGroup"
 
   EMRDemoWorkerNodeSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -299,12 +302,16 @@ Resources:
           FromPort: '50075'
           ToPort: '50075'
           CidrIp: 0.0.0.0/0  # HDFS DataNode HTTP access
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-WorkerNode-SecurityGroup"
 
   EMRDemoServiceAccessSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: "Service access security group for EMR cluster"
       VpcId: !Ref EMRDemoNetwork
+      DependsOn: EMRDemoLeaderNodeSecurityGroup
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: '2181'  # Zookeeper (if applicable for internal EMR communication)
@@ -334,6 +341,9 @@ Resources:
           FromPort: '9443'
           ToPort: '9443'
           SourceSecurityGroupId: !Ref EMRDemoLeaderNodeSecurityGroup
+      Tags:
+        - Key: "Name"
+          Value: "EMRDemo-ServiceAccess-SecurityGroup"
 
   #######
   # IAM #
