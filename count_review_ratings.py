@@ -7,6 +7,9 @@ from pyspark.sql.functions import col
 # METHODS #
 ###########
 
+VALID_RATINGS = [1.0, 2.0, 3.0, 4.0, 5.0]
+"""(List[str]): The list of valid book review ratings for the input book reviews dataset."""
+
 
 def count_review_ratings(data_source: str, output_uri: str) -> None:
     """
@@ -27,6 +30,7 @@ def count_review_ratings(data_source: str, output_uri: str) -> None:
         reviews_df = reviews_df.withColumn(
             "review/score", col("review/score").cast("float")
         )
+        reviews_df = reviews_df.filter(col("review/score").isin(VALID_RATINGS))
         score_count = reviews_df.groupBy("review/score").count()
         score_count.write.option("header", "true").mode("overwrite").csv(output_uri)
 
